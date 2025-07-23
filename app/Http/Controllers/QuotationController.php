@@ -15,9 +15,17 @@ class QuotationController extends Controller
 {
     public function index()
     {
-        $quotations = auth()->user()->isAdmin()
+        /*  $quotations = auth()->user()->isAdmin()
             ? Quotation::with('user')->withTrashed()->get()
-            : auth()->user()->quotations()->withTrashed()->get();
+            : auth()->user()->quotations()->withTrashed()->get(); */
+        $cacheKey = 'quotations_user_' . $user->id;
+
+        // Cache the list of quotations per user
+        $quotations = Cache::store('redis')->remember($cacheKey, now()->addMinutes(60), function () use ($user) {
+            return $user->isAdmin()
+                ? Quotation::with('user')->withTrashed()->get()
+                : $user->quotations()->withTrashed()->get();
+        });
         return view('quotations.index', compact('quotations'));
     }
 
@@ -68,14 +76,17 @@ class QuotationController extends Controller
         return redirect()->route('dashboard')->with('success', 'Quotation created successfully.');
     }
 
-    public function show(Quotation $quotation)
+    public function show($id) //Quotation $quotation
     {
+        $quotation = Quotation::getCached($id); // Use cached quotation
         $this->authorizeQuotation($quotation);
         return view('quotations.show', compact('quotation'));
     }
 
-    public function edit(Quotation $quotation)
+    public function edit($id) //Quotation $quotation
     {
+        $quotation = Quotation::getCached($id); // Use cached quotation
+
         if ($quotation->status !== 'pending' || (!auth()->user()->isAdmin() && $quotation->user_id !== auth()->id())) {
             return redirect()->route('quotations.index');
         }
@@ -83,8 +94,9 @@ class QuotationController extends Controller
         return view('quotations.edit', compact('quotation', 'products'));
     }
 
-    public function update(Request $request, Quotation $quotation)
+    public function update(Request $request, $id) //Quotation $quotation
     {
+        $quotation = Quotation::getCached($id); // Use cached quotation
 
         if ($quotation->status !== 'pending' && !auth()->user()->isAdmin()) {
 
@@ -128,18 +140,23 @@ class QuotationController extends Controller
         $quotation->items()->createMany($items);
 
         //  Cache::store('redis')->forget('quotations_user_' . auth()->id());
-
+        /* 
         Cache::store('redis')->forget('quotations_user_' . $quotation->user_id);
         Cache::store('redis')->forget('quotation_' . $quotation->id);
-
+        */
+        // Clear the cache
+        Quotation::clearCache($quotation->id); // Clear the quotation cache
+        Cache::store('redis')->forget('quotations_user_' . $quotation->user_id);
 
         Log::info('Quotation updated', ['quotation_id' => $quotation->id]);
 
         return redirect()->route('dashboard')->with('success', 'Quotation updated successfully.');
     }
 
-    public function updateStatus(Request $request, Quotation $quotation)
+    public function updateStatus(Request $request, $id) //Quotation $quotation
     {
+        $quotation = Quotation::getCached($id); // Use cached quotation
+
         $this->middleware('role:admin');
         $request->validate([
             'status' => 'required|in:approved,rejected,pending',
@@ -147,11 +164,13 @@ class QuotationController extends Controller
 
         $quotation->update(['status' => $request->status]);
         Cache::store('redis')->forget('quotations_user_' . $quotation->user_id);
+
         Log::info('Quotation status updated, sending notification', [
             'quotation_id' => $quotation->id,
             'status' => $request->status,
             'user_id' => $quotation->user_id,
         ]);
+
         try {
             Notification::send($quotation->user, new QuotationStatusUpdated($quotation));
             Cache::store('redis')->forget('notifications_user_' . $quotation->user_id);
@@ -168,19 +187,26 @@ class QuotationController extends Controller
         return redirect()->route('dashboard')->with('success', 'Quotation status updated.');
     }
 
-    public function destroy(Quotation $quotation)
+    public function destroy($id) //Quotation $quotation
     {
+        $quotation = Quotation::getCached($id); // Use cached quotation
+
         $this->authorizeQuotation($quotation);
         $quotation->delete();
+
+        // Clear the cache for user and quotation
         Cache::store('redis')->forget('quotations_user_' . auth()->id());
+        Quotation::clearCache($quotation->id); // Clear single quotation cache
 
         Log::info('Quotation soft deleted', ['quotation_id' => $quotation->id]);
 
         return redirect()->route('quotations.index')->with('success', 'Quotation deleted successfully.');
     }
 
-    public function downloadPdf(Quotation $quotation)
+    public function downloadPdf($id) //Quotation $quotation
     {
+        $quotation = Quotation::getCached($id); // Use cached quotation
+
         $this->authorizeQuotation($quotation);
         $pdf = Pdf::loadView('quotations.report', compact('quotation'));
         return $pdf->download('quotation_' . $quotation->id . '.pdf');

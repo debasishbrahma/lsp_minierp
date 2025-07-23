@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Product;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
 class ProductController extends Controller
@@ -19,7 +20,14 @@ class ProductController extends Controller
     public function index()
     {
         // $products = Product::all();
-        $products = auth()->user()->isAdmin() ? Product::withTrashed()->get() : Product::all();
+        // $products = auth()->user()->isAdmin() ? Product::withTrashed()->get() : Product::all();
+
+        $cacheKey = 'products_user_' . auth()->id();
+
+        $products = Cache::store('redis')->remember($cacheKey, now()->addMinutes(60), function () {
+            return auth()->user()->isAdmin() ? Product::withTrashed()->get() : Product::all();
+        });
+
         return view('products.index', compact('products'));
     }
 
@@ -43,16 +51,19 @@ class ProductController extends Controller
         return redirect()->route('dashboard')->with('success', 'Product created successfully.');
     }
 
-    public function edit(Product $product)
+    public function edit($id) //Product $product
     {
         /*  if (!auth()->user()->isAdmin()) {
             //  Livewire::dispatch('showToast', 'Unauthorized to edit products.', 'error');
             return redirect()->route('products.index');
         } */
+
+        $product = Product::getCached($id); // Get product from Redis cache
+
         return view('products.edit', compact('product'));
     }
 
-    public function update(Request $request, Product $product)
+    public function update(Request $request,  $id) //Product $product
     {
         /*  if (!auth()->user()->isAdmin()) {
             //  Livewire::dispatch('showToast', 'Unauthorized to edit products.', 'error');
@@ -65,9 +76,10 @@ class ProductController extends Controller
             'unit_price' => 'required|numeric|min:0',
             'quantity_available' => 'required|integer|min:0',
         ]);
-
+        $product = Product::getCached($id); // Get cached product (or DB fallback)
         $product->update($request->all());
-        Product::clearCache($product->id);
+
+        Product::clearCache($product->id); // Clear cache after update
 
         Log::info('Product updated', ['product_id' => $product->id]);
         //product.index
